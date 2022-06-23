@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf8" />
+    <title>Maps</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.js"></script>
+
+    <style type="text/css">
+    </style>
+
+    <canvas id="canvas" width="500" heigh="500"></canvas>
+</head>
+
+<body>
+
+    <script>
+        const canvas = $("#canvas");
+
+        const DIMENSIONS = {
+            lat_min: 45.8242,
+            lat_max: 45.8290,
+            lon_min: 15.9828,
+            lon_max: 15.9876,
+        }
+
+        const canvasWidth = canvas.width(); 
+        const canvasHeight = canvas.height(); 
+        const unitWidth = canvasWidth / (DIMENSIONS.lon_max - DIMENSIONS.lon_min);
+
+        $(document).ready(main)
+
+        function worldToCanvas(lat, lon) {
+            const pixel_lat = (lat - DIMENSIONS.lat_min) * unitWidth;
+            const pixel_lon = (lon - DIMENSIONS.lon_min) * unitWidth;
+            return [pixel_lat, pixel_lon];
+        }
+
+        function canvasToWorld(pixel_lat, pixel_lon) {
+            const lat = DIMENSIONS.lat_min + pixel_lat / unitWidth;
+            const lon = DIMENSIONS.lon_min + pixel_lon / unitWidth;
+            return [lat, lon];
+        }
+
+        function main() {
+            $.ajax({
+                url: "https://rp2.studenti.math.hr/~zbujanov/dz4/get_ways.php",
+                data: DIMENSIONS,
+                success: function (data) {
+                    console.log(data);
+                    console.log(worldToCanvas(DIMENSIONS.lat_min, DIMENSIONS.lon_min));
+                    console.log(worldToCanvas(DIMENSIONS.lat_max, DIMENSIONS.lon_max));
+                }
+            });
+        }
+
+    </script>
+
+</body>
+
+</html>
