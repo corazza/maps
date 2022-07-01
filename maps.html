@@ -7,53 +7,310 @@
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.js"></script>
 
     <style type="text/css">
+        #canvas {
+            /* border: 1px solid grey; */
+        }
     </style>
 
-    <canvas id="canvas" width="500" heigh="500"></canvas>
+    <canvas id="canvas" width="1000" height="800"></canvas>
+    <br />
+    <button id="zoomout">Zoom in</button>
+    <button id="zoomin">Zoom out</button>
 </head>
 
 <body>
-
     <script>
-        const canvas = $("#canvas");
+        const MAX_STREET_WIDTH = 25;
 
-        const DIMENSIONS = {
-            lat_min: 45.8242,
-            lat_max: 45.8290,
-            lon_min: 15.9828,
-            lon_max: 15.9876,
-        }
+        let camera = {
+            lat: 45.825,
+            lon: 15.985,
+            unit_length: 40000,
+            zoom: 1,
+        };
 
-        const canvasWidth = canvas.width(); 
-        const canvasHeight = canvas.height(); 
-        const unitWidth = canvasWidth / (DIMENSIONS.lon_max - DIMENSIONS.lon_min);
+        let mousedown_coords = [0, 0];
+        let lastData = {};
+        let requests = 0;
 
         $(document).ready(main)
 
-        function worldToCanvas(lat, lon) {
-            const pixel_lat = (lat - DIMENSIONS.lat_min) * unitWidth;
-            const pixel_lon = (lon - DIMENSIONS.lon_min) * unitWidth;
-            return [pixel_lat, pixel_lon];
+        function worldToCanvas(lat, lon, camera) {
+            const canvas = document.getElementById('canvas');
+            const pixel_lat = (lat - camera.lat) * camera.unit_length * camera.zoom + canvas.height / 2.0;
+            const pixel_lon = (lon - camera.lon) * camera.unit_length * camera.zoom + canvas.width / 2.0;
+            return [pixel_lon, pixel_lat];
         }
 
-        function canvasToWorld(pixel_lat, pixel_lon) {
-            const lat = DIMENSIONS.lat_min + pixel_lat / unitWidth;
-            const lon = DIMENSIONS.lon_min + pixel_lon / unitWidth;
+        function nodeToCanvas(node, camera) {
+            return worldToCanvas(node.lat, node.lon, camera);
+        }
+
+        function canvasToWorld(x, y, camera) {
+            const canvas = document.getElementById('canvas');
+            const x_offset = x - canvas.width / 2;
+            const y_offset = y - canvas.height / 2;
+            const lat = camera.lat + y_offset / camera.unit_length / camera.zoom;
+            const lon = camera.lon + x_offset / camera.unit_length / camera.zoom;
             return [lat, lon];
         }
 
-        function main() {
+        function dimensionsFromCamera(camera) {
+            const canvas = document.getElementById('canvas');
+            top_left = canvasToWorld(-10, -10, camera);
+            bottom_right = canvasToWorld(canvas.width + 10, canvas.height + 10, camera);
+
+            return {
+                lat_min: top_left[0],
+                lat_max: bottom_right[0],
+                lon_min: top_left[1],
+                lon_max: bottom_right[1],
+            };
+        }
+
+        function clearCanvas() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'rgb(230, 230, 230)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function orMax(x) {
+            return Math.min(x, MAX_STREET_WIDTH);
+        }
+
+        function wayWidthColor(way, camera) {
+            switch (way.type) {
+                case 'main':
+                    return ['white', orMax(14 * camera.zoom)];
+                case 'secondary':
+                    return ['white', orMax(8 * camera.zoom)];
+                case 'residential':
+                    return ['white', orMax(4 * camera.zoom)];
+                case 'pedestrian':
+                    return ['rgb(200, 200, 200)', orMax(2 * camera.zoom)];
+                case 'other':
+                    return ['rgb(200, 200, 200)', orMax(2 * camera.zoom)];
+            }
+        }
+
+        function drawWays(data) {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+
+            for (i in data.ways) {
+                const first_node = data.nodesById[data.ways[i].nodes[0]];
+                const coords = nodeToCanvas(first_node, camera);
+                const widthColor = wayWidthColor(data.ways[i], camera);
+                ctx.strokeStyle = widthColor[0];
+                ctx.lineWidth = widthColor[1];
+                ctx.beginPath();
+                ctx.moveTo(coords[0], coords[1]);
+                for (let j = 1; j < data.ways[i].nodes.length; ++j) {
+                    const node = data.nodesById[data.ways[i].nodes[j]];
+                    const coords = nodeToCanvas(node, camera);
+                    ctx.lineTo(coords[0], coords[1]);
+                }
+                ctx.stroke();
+            }
+        }
+
+        function drawNames(data) {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+
+            let iscrtao = {};
+            let counter = 0;
+
+            for (i in data.ways) {
+                if (data.ways[i].name !== undefined) {
+                    if (iscrtao[data.ways[i].name] === undefined) {
+                        iscrtao[data.ways[i].name] = true;
+                        ++counter;
+
+                        const beginNode = data.ways[i].nodes[data.ways[i].longest_segment];
+                        const endNode = data.ways[i].nodes[data.ways[i].longest_segment + 1];
+                        const coords = nodeToCanvas(data.nodesById[beginNode], camera);
+                        const coords_end = nodeToCanvas(data.nodesById[endNode], camera);
+                        const coords_middle = [(coords[0] + coords_end[0]) / 2, (coords[1] + coords_end[1]) / 2];
+                        const angle = segmentAngle(data, beginNode, endNode);
+
+                        ctx.font = `${10 * camera.zoom}px arial`;
+                        ctx.fillStyle = 'dimgrey';
+                        const textWidth = ctx.measureText(data.ways[i].name).width;
+
+                        ctx.save();
+                        ctx.translate(coords_middle[0], coords_middle[1]);
+                        ctx.rotate(-(angle - Math.PI / 2));
+                        ctx.fillText(data.ways[i].name, 0, 0);
+                        ctx.restore();
+                    }
+                }
+
+                if (counter >= 10) {
+                    break;
+                }
+            }
+        }
+
+        function drawData(data) {
+            clearCanvas();
+            drawWays(data);
+            drawNames(data);
+        }
+
+        function segmentLength(data, i, j) {
+            let lat1 = data.nodesById[i].lat;
+            let lat2 = data.nodesById[j].lat;
+            let lon1 = data.nodesById[i].lon;
+            let lon2 = data.nodesById[j].lon;
+            return Math.sqrt(Math.pow(lat1 - lat2, 2) + Math.pow(lon1 - lon2, 2));
+        }
+
+        function segmentAngle(data, i, j) {
+            let lat1 = data.nodesById[i].lat;
+            let lat2 = data.nodesById[j].lat;
+            let lon1 = data.nodesById[i].lon;
+            let lon2 = data.nodesById[j].lon;
+            return Math.atan2(lon1 - lon2, lat1 - lat2);
+        }
+
+        function requestCameraData() {
+            ++requests;
             $.ajax({
                 url: "https://rp2.studenti.math.hr/~zbujanov/dz4/get_ways.php",
-                data: DIMENSIONS,
-                success: function (data) {
-                    console.log(data);
-                    console.log(worldToCanvas(DIMENSIONS.lat_min, DIMENSIONS.lon_min));
-                    console.log(worldToCanvas(DIMENSIONS.lat_max, DIMENSIONS.lon_max));
-                }
+                data: dimensionsFromCamera(camera),
+                success: receivedData,
             });
         }
 
+        function receivedData(data) {
+            --requests;
+            if (requests > 0) {
+                return;
+            }
+
+            lastData = data;
+
+            data.nodesById = {};
+            for (k in data.nodes) {
+                data.nodesById[data.nodes[k].id] = data.nodes[k];
+            }
+
+            for (i in data.ways) {
+                let longest_segment = -1;
+                let longest_segment_length = 0;
+                for (let j = 1; j < data.ways[i].nodes.length; ++j) {
+                    let segment_length = segmentLength(data, data.ways[i].nodes[j - 1], data.ways[i].nodes[j]);
+                    if (segment_length > longest_segment_length) {
+                        longest_segment = j - 1;
+                        longest_segment_length = segment_length;
+                    }
+                }
+                data.ways[i].longest_segment = longest_segment;
+            }
+
+            drawData(lastData);
+        }
+
+        function main() {
+            requestCameraData();
+            $("#zoomin").on('click', zoomIn);
+            $("#zoomout").on('click', zoomOut);
+            // $("#canvas").on('click', click);
+            $("#canvas").on('wheel', wheel);
+            $("#canvas").on('mousedown', mousedown);
+            $("#canvas").on('mouseup', mouseup);
+        }
+
+        function zoomIn() {
+            camera.zoom = camera.zoom * 0.9;
+            drawData(lastData);
+            requestCameraData();
+        }
+
+        function zoomOut() {
+            camera.zoom = camera.zoom / 0.9;
+            drawData(lastData);
+            requestCameraData();
+        }
+
+        function click(event) {
+            const canvas = document.getElementById('canvas');
+            const moveSpeedX = canvas.width / camera.unit_length / camera.zoom / 3;
+            const moveSpeedY = canvas.height / camera.unit_length / camera.zoom / 3;
+
+            let moved = false;
+
+            if (event.clientX < canvas.width / 3) {
+                camera.lon -= moveSpeedX;
+                moved = true;
+            } else if (event.clientX > canvas.width * 2 / 3) {
+                camera.lon += moveSpeedX;
+                moved = true;
+            }
+
+            if (event.clientY < canvas.height / 3) {
+                camera.lat -= moveSpeedY;
+                moved = true;
+            } else if (event.clientY > canvas.height * 2 / 3) {
+                camera.lat += moveSpeedY;
+                moved = true;
+            }
+
+            if (moved) {
+                requestCameraData();
+            }
+        }
+
+        function wheel(event) {
+            const current_world = canvasToWorld(event.clientX, event.clientY, camera);
+            let next_world = [0, 0];
+
+            console.log(event);
+
+            if (event.originalEvent.deltaY > 0) {
+                camera.zoom = camera.zoom * 0.9;
+                next_world = canvasToWorld(event.clientX, event.clientY, camera);
+            } else {
+                camera.zoom = camera.zoom / 0.9;
+                next_world = canvasToWorld(event.clientX, event.clientY, camera);
+            }
+
+            const lat_delta = next_world[0] - current_world[0];
+            const lon_delta = next_world[1] - current_world[1];
+
+            camera.lon -= lon_delta;
+            camera.lat -= lat_delta;
+
+            drawData(lastData);
+            requestCameraData();
+        }
+
+        function mousedown(event) {
+            console.log("down");
+            mousedown_coords = [event.clientX, event.clientY];
+        }
+
+        function mouseup(event) {
+            console.log("up");
+            const mouseup_coords = [event.clientX, event.clientY];
+
+            console.log(mousedown_coords);
+            console.log(mouseup_coords);
+
+            current_world = canvasToWorld(mousedown_coords[0], mousedown_coords[1], camera);
+            next_world = canvasToWorld(mouseup_coords[0], mouseup_coords[1], camera);
+
+            const lat_delta = next_world[0] - current_world[0];
+            const lon_delta = next_world[1] - current_world[1];
+
+            camera.lon -= lon_delta;
+            camera.lat -= lat_delta;
+
+            drawData(lastData);
+            requestCameraData();
+        }
     </script>
 
 </body>
